@@ -1,171 +1,169 @@
+// Copyright Ananou Kevin 2022
+// Trading Bot to copie trades from binance learderboard into ftx / kraken account
+
 module.exports = require('./libs/pnlManager')
 const TelegramBot = require('node-telegram-bot-api');
 const pnlWatcher = require("binance-leaderboard-listener")
-const { stringify } = require('json-buffer')
 const token = '5403941417:AAHLZTets1DDYojOOKDP_4LGVco29HAcFgs';
 const bot = new TelegramBot(token, {polling: false});
 const {RestClient} = require('ftx-api');
+const cf = require('./cfRestApiV3')
 
-let alldata = []
-let alldata2 = []
-let number = 0
-let firstSize = 0
-let name = "Anonymous User-420a31"
+const baseUrl = 'https://futures.kraken.com'
+const apiKey = '5dqU/cGLd3fua+cur+O0vp7DtJtwEl03qmY4N2WCqVHXEctqHd2KAytn'
+const apiSecret = 'XZsstx1ioEPohljB8mjF+IHiLAncIKOu0kJu1e4tHe7OJnpfAleV7ABhbMrPR7+qpWTcaSBESXRwMEBhKqP+exs6'
+const requestTimeoutMs = 5000
+const cfRest = new cf.CfRestApiV3(baseUrl, apiKey, apiSecret, requestTimeoutMs)
+
+var alldata = []
+var alldata2 = []
+var number = 0
+var firstSize = {}
+var firstPrice = {}
+
+const name = "Anonymous User-420a31"
 console.log("Bot Lancé");
 
 
-const order = (namecurrency,sens,reduceOnly,sizeof) => {
-    const key = 'bwVG4bDvvEvGN1Uslgg8-IFri_9EuOy0oibElJsf';
-    const secret = 'xoPfyLb9IbetNtJ5wXrsCEGCbjEa_6ZHNTX2nnl2';
+const order = (namecurrency,sens,reduceOnly,sizeof) => 
+{
+    try 
+    { 
+        
+        var balance = 0
+        var size = 0
 
-    const restClientOptions = {
-        subAccountName: "BBOT",
-    };
-  
-    const client = new RestClient(key, secret, restClientOptions );
-  
-    try {
-        let balanceusdt = 0;
-        client.setAccountLeverage(1)
-        client.getBalances()
-        .then(result => {
-          result.result.map(getcoin => {
-            if(getcoin.coin === "USDT"){
-                balanceusdt += getcoin.total
-            } 
-            else if(getcoin.coin === "USD") {
-                balanceusdt += getcoin.total
-            }})
+        cfRest.getAccounts().then(async result => 
+            {
+            
+            balance = JSON.parse(result.body).accounts.flex.balanceValue
 
-            let size = balanceusdt * 0.10 / sizeof;
-            client.getMarket(namecurrency+"-PERP").then(res => {
-                if(res.result.minProvideSize > size)
-                {
-                    size = res.result.minProvideSize
-                }
-            })
             if(reduceOnly)
             {
-                size = sizeof;
+                    await cfRest.getOpenPositions().then(result => JSON.parse(result.body)["openPositions"].map(position => {
+                    if(position.symbol === "pf_"+namecurrency+"usd")
+                    {
+                        size = position.size
+                    }
+                    }))
             }
-
-            const NewOrderReq = {
-                market: namecurrency+"-PERP",
-                side: sens.toLowerCase(),
-                price: null,
-                type: "market",
-                size: size,
-                reduceOnly: reduceOnly,
-            }
-            client.placeOrder(NewOrderReq).catch((error) => {"erreur dans le place order" + console.error(error);});
+            else
+            {
+                size = balance * 0.50 / sizeof
+            }   
+            
+            cfRest.sendOrder("mkt",sens.toLowerCase(),size.toFixed(3),"pf_"+namecurrency+"usd",reduceOnly).then(result => console.log(JSON.parse(result.body)))
         })
-    } catch (e) {
-      console.error('Order problem : ', e);
-      return "Order Error"
-    }
 
-  return "Order Placed"
+    } catch (e) 
+    {
+      console.error('Order problem : ', e);
+    }
 }
 
-const orderModify = (namecurrency,sens,reduceOnly,sizeof) => {(async () => {
-    const key = 'bwVG4bDvvEvGN1Uslgg8-IFri_9EuOy0oibElJsf';
-    const secret = 'xoPfyLb9IbetNtJ5wXrsCEGCbjEa_6ZHNTX2nnl2';
 
-    const restClientOptions = {
-        subAccountName: "BBOT",
-    };
-  
-    const client = new RestClient(key, secret, restClientOptions );
-  
-    try {
-        let ordersize = 0;
-        const FillsReq = {
-            market: namecurrency+"-PERP",
-            limit: 1
-        }
-        client.setAccountLeverage(1).catch((error) => {console.error("erreur dans le set " + error);});
-        client.getFills(FillsReq).then(res => {
-            ordersize = res.result[0].size; 
-            console.log("taille trouvée " + ordersize);
-            console.log("pourcentage " + sizeof);
-            console.log("taille final " + ordersize * sizeof);
-        
-            const NewOrderReq = {
-                market: namecurrency+"-PERP",
-                side: sens.toLowerCase(),
-                price: null,
-                type: "market",
-                size: ordersize * sizeof,
-                reduceOnly: reduceOnly,
+
+const orderModify = async (namecurrency,sens,reduceOnly,sizeof) => 
+{
+    try 
+    {
+        var sizeOfCurrentPosition = 0
+        await cfRest.getOpenPositions().then(result => JSON.parse(result.body)["openPositions"].map(position => {
+            if(position.symbol === "pf_"+namecurrency+"usd")
+            {
+                sizeOfCurrentPosition = position.size
             }
-            client.placeOrder(NewOrderReq).catch((error) => {"erreur dans le place order" + console.error(error);});
-        
-        
-        }).catch((error) => {console.error("erreur dans le getfills " + error);});
-        console.log("Ancienne size " + ordersize)
+        }))
 
-    } catch (e) {
-      console.error('Order problem : ', e);
+        console.log("Adding " + sizeOfCurrentPosition * sizeof)
+        cfRest.sendOrder("mkt",sens.toLowerCase(), Math.abs(sizeOfCurrentPosition * sizeof).toFixed(3),"pf_"+namecurrency+"usd",reduceOnly).then(result => console.log(JSON.parse(result.body)))
+
+    } catch (e) 
+    {
+      console.error('OrderModify problem : ', e);
     }
-
-  })();
 }
 
 const listener = pnlWatcher.listen({
     encryptedUid: "FAEE208524D779963BC8C2943797D906",
-    delay: 120000,
+    delay: 5000,
     tradeType: "PERPETUAL"
 })
 
-listener.on('update', (data) => {
-
-    if(number === 0){
+listener.on('update', (data) => 
+{
+    if(number === 0 && data != null)
+    {
         data.map((newdata) => {alldata.push(newdata); alldata2.push(newdata)})
         number ++
     }
-    else{
-        alldata2 = [];
-        data.map((newdata) => {alldata2.push(newdata)})
 
-        if(alldata2.length > alldata.length)
+    else
+    {
+        alldata2 = [];
+        if(data != null)
         {
-            console.log("Passage de " + alldata.length + " à " + alldata2.length)
-            alldata2.map(element => 
+            data.map((newdata) => {alldata2.push(newdata)}) 
+        }
+
+        if(alldata2.length > alldata.length) //if there is a new trade
+        {
+            console.log(alldata.length + " trade(s) to " + alldata2.length)
+            alldata2.map(newList => 
             {
-                let test = alldata.some(element2 => element.symbol === element2.symbol)
-                if (test  === false)
+                if(alldata.some(oldList => newList.symbol === oldList.symbol) === false)
                 {
                     let sens = "SELL"
                     let fleche = "⬇"
-                    if(element.amount > 0){
+                    let namecurrency = newList.symbol.slice(0,-4)
+
+                    if(newList.amount > 0) //BUY trade
+                    {
                         sens = "BUY"
                         fleche = "⬆"
                     } 
-                    
-                    let namecurrency = element.symbol.slice(0,-4)
-                    //order(namecurrency,sens,false,element.markPrice);
-                    console.log("Order created")
-                    console.log("Nouvel Ordre " + element.symbol +" " + element.entryPrice)
-                    bot.sendMessage("-1001769991025", "🔱 Author " + name + "\n" + fleche + " OPEN " + sens + " " + element.symbol +"\nPrice " + element.entryPrice.toFixed(4))
-                    alldata = alldata2
+                          
+                    order(namecurrency,sens,false,newList.markPrice);
+
+                    console.log("New order " + newList.symbol +" " + newList.entryPrice + " " +(new Date()).toGMTString())
+                    bot.sendMessage("-1001769991025", "🔱 Author " + name + "\n" + fleche + " OPEN " + sens + " " + newList.symbol +"\nPrice " + newList.entryPrice.toFixed(4))
+
+                    firstSize[newList.symbol] = newList.amount
+                    firstPrice[newList.symbol] = newList.entryPrice
                 }
             })
+            alldata = alldata2
         }
 
         else if(alldata2.length < alldata.length)
         {
-            console.log("Passage de " + alldata.length + " à " + alldata2.length)
-            alldata.map(element => {
-                if (alldata2.some(element2 => element.symbol === element2.symbol) === false)
+            console.log(alldata.length + " trade(s) to " + alldata2.length)
+            alldata.map(oldList => 
+            {
+                if (alldata2.some(newList => oldList.symbol === newList.symbol) === false)
                 {
                     let Pourcentage;
-                    if(element.amount < 0)
+                    let PourcentageFirst;
+
+                    if(oldList.amount < 0)
                     {
-                        Pourcentage = (element.entryPrice - element.markPrice)/element.entryPrice * 100
+                        Pourcentage = (oldList.entryPrice - oldList.markPrice)/oldList.entryPrice * 100
+
+                        if(firstPrice.hasOwnProperty(oldList.symbol) === true)
+                        {
+                            PourcentageFirst = (firstPrice[oldList.symbol] - oldList.markPrice)/oldList.entryPrice * 100
+                        }
                     }
                     else{
-                        Pourcentage = (element.markPrice - element.entryPrice)/element.entryPrice * 100
+                        
+                        Pourcentage = (oldList.markPrice - oldList.entryPrice)/oldList.entryPrice * 100
+
+                        if(firstPrice.hasOwnProperty(oldList.symbol) === true)
+                        {
+                            PourcentageFirst = (oldList.markPrice - firstPrice[oldList.symbol])/oldList.entryPrice * 100
+                        }
                     }
+
                     let smyle =""
                     if(Pourcentage > 0)
                     {
@@ -177,73 +175,75 @@ listener.on('update', (data) => {
                     }
 
                     let sens = "BUY"
-                    if(element.amount > 0){
+                    if(oldList.amount > 0){
                         sens = "SELL"
                     }
 
-                    let namecurrency = element.symbol.slice(0,-4)
-                    //order(namecurrency,sens,true,10000000000000);
-                    console.log("Order created")
-                    console.log("Ordre Cloturé" + element.symbol +" " + element.markPrice)
-                    bot.sendMessage("-1001769991025","🔱 Author " + name + "\n" + "🛑 CLOSE " + element.symbol +"\nPrice " + element.markPrice.toFixed(4) + "\n" + smyle + " Percentage : " + Pourcentage.toFixed(2) + "%" + "\n" + smyle + " Percentage of capital : " + (Pourcentage*(element.amount / firstSize)).toFixed(2) + "%" + "\n" + "🔥" + " Avec 5% du capital : " + (5 * (Pourcentage*(element.amount / firstSize)/100)).toFixed(2) + "%" + " 📊" )
-                    alldata = alldata2
+                    let namecurrency = oldList.symbol.slice(0,-4)
+                    order(namecurrency,sens,true,10000000000000);
+
+                    console.log("Order Closed" + oldList.symbol +" " + oldList.markPrice + " " +(new Date()).toGMTString())
+
+                    if(firstSize.hasOwnProperty(oldList.symbol) === true && firstPrice.hasOwnProperty(oldList.symbol) === true)
+                    {
+                        bot.sendMessage("-1001769991025","🔱 Author " + name + "\n" + "🛑 CLOSE " + oldList.symbol +"\nPrice " + oldList.markPrice.toFixed(4) + "\n" + smyle + " Percentage : " + PourcentageFirst.toFixed(2) + "%" + "\n" + smyle + " Percentage with modifications : " + (Pourcentage*(oldList.amount / firstSize[oldList.symbol])).toFixed(2) + "%" + "\n" + "📊" + " With 5% of capital : " + (5 * (Pourcentage*(oldList.amount / firstSize[oldList.symbol])/100)).toFixed(2) + "%")
+                        delete firstSize[oldList.symbol]
+                        delete firstPrice[oldList.symbol]
+                    }
+                    else
+                    {
+                        bot.sendMessage("-1001769991025","🔱 Author " + name + "\n" + "🛑 CLOSE " + oldList.symbol +"\nPrice " + oldList.markPrice.toFixed(4) + "\n" + smyle + " Percentage : " + Pourcentage.toFixed(2) + "%" )
+                    }
                 }
             })
+            
+            alldata = alldata2
         }
+
         else if(alldata2.length === alldata.length)
         {
-            for (let i = 0; i < alldata2.length; i++) {
-                if(alldata2[i].amount !== alldata[i].amount && alldata2[i].symbol === alldata[i].symbol){
-                    let newsize = ((alldata2[i].amount - alldata[i].amount)/alldata[i].amount * 100).toFixed(0)
+            for (let i = 0; i < alldata2.length; i++) 
+            {
+                if(alldata2[i].amount !== alldata[i].amount && alldata2[i].symbol === alldata[i].symbol)
+                {
+                    let namecurrency = alldata[i].symbol.slice(0,-4)
+                    let sens = "BUY"
+                    let reduceOnly = false
+                    let change = ((alldata2[i].amount - alldata[i].amount)/alldata[i].amount * 100).toFixed(0)
 
-                        let change = ((alldata2[i].amount - alldata[i].amount)/alldata[i].amount * 100).toFixed(0)
-                        let word = "Amount increased for ";
-                        if(change < 0){
-                            word = "Amount decreased for "
-                        }
-                        let namecurrency = alldata[i].symbol.slice(0,-4)
-                        let sens = "BUY"
-                        let reduceOnly = false
-                        if(alldata[i].amount > 0 && change > 0){
-                            sens = "BUY"
-                        }
-                        else if (alldata[i].amount > 0 && change < 0)
-                        {
-                            sens = "SELL"
-                            reduceOnly = true
-                            change = change - change*2
-                        }
-                        else if (alldata[i].amount < 0 && change < 0)
-                        {
-                            sens = "BUY"
-                            reduceOnly = true
-                            change = change - change*2
-                        }
-                        else if (alldata[i].amount < 0 && change > 0)
-                        {
-                            sens = "SELL"
-                        }
+                    if(alldata[i].amount > 0 && change > 0)
+                    {
+                        sens = "BUY"
+                    }
+                    else if (alldata[i].amount > 0 && change < 0)
+                    {
+                        sens = "SELL"
+                        reduceOnly = true
+                        change = change - change*2
+                    }
+                    else if (alldata[i].amount < 0 && change < 0)
+                    {
+                        sens = "BUY"
+                        reduceOnly = true
+                        change = change - change*2
+                    }
+                    else if (alldata[i].amount < 0 && change > 0)
+                    {
+                        sens = "SELL"
+                    }
                         
-
-                        //orderModify(namecurrency,sens,reduceOnly,(change/100) );
-                        console.log("Order modified")
-
-                        console.log("Taille modifié sur " + alldata2[i].symbol +" de " + (alldata2[i].amount - alldata[i].amount)/alldata[i].amount * 100 + "% " + " de " + alldata[i].amount + " à " + alldata2[i].amount )
-                        alldata = alldata2
+                    orderModify(namecurrency,sens,reduceOnly,(change/100));
                     
+                    console.log("Size modified for " + alldata2[i].symbol +" by " + (alldata2[i].amount - alldata[i].amount)/alldata[i].amount * 100 + "% " + alldata[i].amount + " to " + alldata2[i].amount + "\nLast entryPrice " + alldata[i].entryPrice + " New entryPrice " + alldata2[i].entryPrice + " " +(new Date()).toGMTString())
+
+                    alldata = alldata2
                 }
 
-                else{
+                else
+                {
                     alldata[i].markPrice = alldata2[i].markPrice
                 }
-                
             }
         }
-
     }
 })
-
-module.exports = {
-    order,
-    orderModify
-}
